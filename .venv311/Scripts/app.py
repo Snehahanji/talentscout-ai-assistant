@@ -212,6 +212,8 @@ if 'validation_errors' not in st.session_state:
     st.session_state.validation_errors = []
 if 'session_start' not in st.session_state:
     st.session_state.session_start = datetime.now()
+if 'groq_client' not in st.session_state:
+    st.session_state.groq_client = None
 
 # Enhanced system prompt
 SYSTEM_PROMPT = """You are an intelligent and friendly AI Hiring Assistant for TalentScout, a leading technology recruitment agency. Your role is to conduct initial candidate screening with professionalism, warmth, and efficiency.
@@ -259,13 +261,47 @@ Current conversation stage: {stage}
 Candidate data collected: {data}
 Tech stack mentioned: {tech_stack}"""
 
+@st.cache_resource
 def initialize_groq_client():
-    """Initialize Groq client with API key"""
-    api_key = os.getenv('GROQ_API_KEY') or st.secrets.get('GROQ_API_KEY', '')
-    if not api_key:
-        st.error("⚠️ GROQ_API_KEY not found! Please set it in .streamlit/secrets.toml or environment variables.")
+    """Initialize Groq client with API key - cached to avoid reinitialization"""
+    try:
+        # Get API key from environment or secrets
+        api_key = os.getenv('GROQ_API_KEY')
+        if not api_key:
+            try:
+                api_key = st.secrets.get('GROQ_API_KEY', '')
+            except:
+                api_key = ''
+        
+        if not api_key:
+            st.error("⚠️ GROQ_API_KEY not found! Please set it in .streamlit/secrets.toml or environment variables.")
+            st.info("""
+            **To fix this:**
+            1. Create a file `.streamlit/secrets.toml` in your project root
+            2. Add: `GROQ_API_KEY = "your_api_key_here"`
+            3. Get your API key from: https://console.groq.com
+            """)
+            st.stop()
+        
+        # Initialize client with explicit parameters only
+        client = Groq(api_key=api_key)
+        return client
+        
+    except TypeError as e:
+        if 'proxies' in str(e):
+            st.error("⚠️ Groq client initialization error due to proxy configuration.")
+            st.info("""
+            **Fix options:**
+            1. Update Groq library: `pip install --upgrade groq`
+            2. Clear any HTTP proxy environment variables
+            3. Use Groq version 0.4.1 or higher
+            """)
+        else:
+            st.error(f"⚠️ Error initializing Groq client: {str(e)}")
         st.stop()
-    return Groq(api_key=api_key)
+    except Exception as e:
+        st.error(f"⚠️ Unexpected error: {str(e)}")
+        st.stop()
 
 def validate_email(email):
     """Validate email format"""
@@ -295,6 +331,7 @@ def extract_candidate_info(messages):
 def get_ai_response(user_message):
     """Get response from Groq AI with enhanced context"""
     try:
+        # Get or initialize client
         client = initialize_groq_client()
         
         # Prepare system prompt with current context
@@ -309,18 +346,21 @@ def get_ai_response(user_message):
         messages.extend(st.session_state.messages)
         messages.append({"role": "user", "content": user_message})
         
-        # Call Groq API
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=messages,
-            temperature=0.7,
-            max_tokens=1000,
-        )
-        
-        return response.choices[0].message.content
+        # Call Groq API with error handling
+        try:
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=messages,
+                temperature=0.7,
+                max_tokens=1000,
+            )
+            return response.choices[0].message.content
+        except Exception as api_error:
+            st.error(f"API Error: {str(api_error)}")
+            return "I apologize, but I'm experiencing technical difficulties. Please try again in a moment."
     
     except Exception as e:
-        return f"I apologize, but I'm having trouble processing your message. Please try again. Error: {str(e)}"
+        return f"I apologize, but I'm having trouble processing your message. Error: {str(e)}"
 
 def detect_conversation_end(message):
     """Detect if user wants to end conversation"""
